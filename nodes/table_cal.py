@@ -13,6 +13,8 @@ import tf
 import tf2_ros
 import geometry_msgs.msg
 
+from scipy.ndimage.filters import gaussian_filter1d
+
 
 def to_unit(vec):
     norm = np.linalg.norm(vec)
@@ -131,8 +133,17 @@ def ransac_normal_plane(cloud, distance_threshold=0.01):
 
 def robust_min_max(theta, plane):
     vec = np.array([[np.cos(theta), np.sin(theta)]])
-    projected = np.matmul(vec.transpose(), plane)
-    hist = np.histogram(projected, bins=100)
+    projected = np.matmul(vec, plane)
+    hist, bins = np.histogram(projected.T, bins=100)
+    hist = gaussian_filter1d(hist, 1)
+    kernel = np.array([1, 0, -1])
+    conv = np.convolve(hist, kernel)
+    plt.plot(hist)
+    plt.plot(conv)
+    plt.show()
+
+    plt.hist(projected.T, bins=100)
+    plt.show()
     min = 0
     max = 10
     return min, max
@@ -349,6 +360,78 @@ def listener():
 def test(fname):
     pcl_cloud = pcl.load(fname)
     main(pcl_cloud)
+
+def test_robust(fname):
+    cloud = pcl.load(fname)
+    indices, model = ransac_normal_plane(cloud)
+    inliers = cloud.extract(indices, negative=False)
+    pcl.save(inliers, 'temp.pcd')
+
+    cloud = cloud.extract(indices, negative=True)
+
+    proj = Projector(model)
+    plane = proj.to_plane(inliers.to_array().T)
+
+    ax = plt.subplot(aspect='equal')
+    ax.scatter(plane[0], plane[1])
+    plt.show()
+
+    angle = []
+    min_arr = []
+    max_arr = []
+    for i in range(0, 180, 1):
+        theta = float(i) / 180.0 * np.pi
+        vec = np.array([[np.cos(theta), np.sin(theta)]])
+        projected = np.matmul(vec, plane)
+        hist, bins = np.histogram(projected.T, bins=100)
+        hist = gaussian_filter1d(hist, 1)
+        kernel = np.array([-1, 0, 1])
+        conv = np.convolve(hist, kernel)
+        angle.append(float(i))
+        min_arr.append(conv.min())
+        max_arr.append(conv.max())
+    plt.plot(angle, min_arr)
+    plt.plot(angle, max_arr)
+    plt.show()
+
+    diff_arr = np.array(max_arr) - np.array(min_arr)
+    rot_sum = []
+    for i in range(0, 90, 1):
+        rot_sum.append(diff_arr[i] + diff_arr[(i+90)%180])
+    plt.plot(range(0, 90, 1), rot_sum)
+    plt.show()
+
+    rot_sum = np.array(rot_sum)
+    peak_angle = rot_sum.argmax()
+
+
+    theta = float(peak_angle) / 180.0 * np.pi
+    vec = np.array([[np.cos(theta), np.sin(theta)]])
+    projected = np.matmul(vec, plane)
+    hist, bins = np.histogram(projected.T, bins=100)
+    hist = gaussian_filter1d(hist, 1)
+    kernel = np.array([-1, 0, 1])
+    conv = np.convolve(hist, kernel)
+    plt.plot(hist)
+    plt.plot(conv)
+    plt.show()
+
+    xmin, xmax = conv.argmin(), conv.argmax()
+
+    theta = float((peak_angle+90) % 180) / 180.0 * np.pi
+    vec = np.array([[np.cos(theta), np.sin(theta)]])
+    projected = np.matmul(vec, plane)
+    hist, bins = np.histogram(projected.T, bins=100)
+    hist = gaussian_filter1d(hist, 1)
+    kernel = np.array([-1, 0, 1])
+    conv = np.convolve(hist, kernel)
+    plt.plot(hist)
+    plt.plot(conv)
+    plt.show()
+
+    ymin, ymax = conv.argmin(), conv.argmax()
+
+    xve
 
 
 listener()
