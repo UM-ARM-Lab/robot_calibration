@@ -103,7 +103,7 @@ class Projector:
         return mat_world
 
 
-def ransac_plane(orig_cloud, distance_threshold = 0.007):
+def ransac_plane(orig_cloud, distance_threshold = 0.01):
     """
     find a plane in point cloud
     :param orig_cloud: PCL::PointCloud
@@ -116,6 +116,26 @@ def ransac_plane(orig_cloud, distance_threshold = 0.007):
     seg.set_distance_threshold(distance_threshold)
     indices, model = seg.segment()
     return indices, model
+
+
+def ransac_normal_plane(cloud, distance_threshold=0.01):
+    seg = cloud.make_segmenter_normals(ksearch=50)
+    seg.set_optimize_coefficients(True)
+    seg.set_model_type(pcl.SACMODEL_NORMAL_PLANE)
+    seg.set_method_type(pcl.SAC_RANSAC)
+    seg.set_distance_threshold(distance_threshold)
+    seg.set_normal_distance_weight(0.01)
+    seg.set_max_iterations(400)
+    indices, model = seg.segment()
+    return indices, model
+
+def robust_min_max(theta, plane):
+    vec = np.array([[np.cos(theta), np.sin(theta)]])
+    projected = np.matmul(vec.transpose(), plane)
+    hist = np.histogram(projected, bins=100)
+    min = 0
+    max = 10
+    return min, max
 
 
 def component_min_max(xyvec, plane):
@@ -152,17 +172,18 @@ def find_candidate_plane(pcl_cloud, table_ratio=1.428, ratio_threshold = 0.02):
     pca = PCA(n_components=3)
     i = 0
     while True:
-        if i > 30:
+        if i > 5:
             raise RuntimeError('Failed to find candidate table plane.')
         i += 1
 
         # find plane
-        indices, model = ransac_plane(pcl_cloud)
+        indices, model = ransac_normal_plane(pcl_cloud)
         inliers = pcl_cloud.extract(indices, negative=False)
 
         # remove points 3 stdev away
-        inliers_filtered = stats_outlier_remove(inliers)
-        inliers_filtered_arr = inliers_filtered.to_array()
+        # inliers_filtered = stats_outlier_remove(inliers)
+        # inliers_filtered_arr = inliers_filtered.to_array()
+        inliers_filtered_arr = inliers.to_array()
 
         # check if plane is table using ratio of two sides
         pca.fit(inliers_filtered_arr)
@@ -170,6 +191,13 @@ def find_candidate_plane(pcl_cloud, table_ratio=1.428, ratio_threshold = 0.02):
         sv_ratio = sv[0]/sv[1]
         print('candidate ratio:', sv_ratio)
         is_table = abs(sv_ratio-table_ratio) < ratio_threshold
+
+        # test
+        proj = Projector(model)
+        on_plane_filtered_arr_2d = proj.to_plane(inliers_filtered_arr.T)
+
+        # find 2d pose and center of the table using PCA
+        xy2d, center2d = pca_localization(on_plane_filtered_arr_2d)
 
         if is_table:
             # found table
@@ -179,6 +207,7 @@ def find_candidate_plane(pcl_cloud, table_ratio=1.428, ratio_threshold = 0.02):
         else:
             # not table
             pcl_cloud = pcl_cloud.extract(indices, negative=True)
+            print(pcl_cloud.width * pcl_cloud.height)
 
     return on_table, table_model
 
@@ -253,9 +282,9 @@ def msg_to_pcl(msg):
     arr1d = arr.reshape(arr.shape[0]*arr.shape[1])
     reca = arr1d.view(np.recarray)
     newarr = np.vstack((reca.x,reca.y,reca.z))
-    finalarr = np.transpose(newarr)
+    filtered = newarr[:, ~np.isnan(newarr).any(axis=0)]
     cloud = pcl.PointCloud()
-    cloud.from_array(finalarr)
+    cloud.from_array(filtered.T)
     # pdb.set_trace()
     return cloud
 # ===================end capture pointcloud2=======================

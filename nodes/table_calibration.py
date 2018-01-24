@@ -44,17 +44,19 @@ class Projector:
 
     def to_plane(self, cloud):
         world_to_plane = self.world_to_plane
-        cloud_h = np.vstack((cloud, np.ones((1, cloud.shape[1]))))
+        cloud_h = np.vstack((cloud.T, np.ones((1, cloud.shape[1]))))
         cloud_plane = np.matmul(world_to_plane, cloud_h)
         plane = cloud_plane[0:3]/cloud_plane[3]
-        plane = plane[0:2]
+        plane = plane[0:2].T
         return plane
 
     def to_world(self, mat):
         plane_to_world = self.plane_to_world
+        mat = mat.T
         mat_h = np.vstack((mat, np.zeros((1, mat.shape[1])), np.ones((1, mat.shape[1]))))
         mat_world_h = np.matmul(plane_to_world, mat_h)
         mat_world = mat_world_h[0:3]/mat_world_h[3]
+        mat_world = mat_world.T
         return mat_world
 
     def to_world_rot_only(self, mat):
@@ -94,7 +96,7 @@ def component_min_max(xyvec, plane):
     return trimmed.min(), trimmed.max()
 
 
-def pca_localization(plane, orig_plane):
+def pca_localization(plane):
     """
     :param plane: plane projected to 2 by n ndarray
     :return: ndarray([[xvec][yvec][center]).transpose()
@@ -195,7 +197,7 @@ def localize(cloud):
     proj = Projector(model)
     plane = proj.to_plane(cloud)
     orig_plane = proj.to_plane(orig_cloud)
-    xy2d, center2d = pca_localization(plane, orig_plane)
+    xy2d, center2d = pca_localization(plane)
     xy3d = proj.to_world_rot_only(xy2d)
     center3d = proj.to_world(center2d)
     transp = xy3d.transpose()
@@ -237,6 +239,21 @@ def listener():
     # localize(cloud)
 
 
+def is_table(on_plane):
+    on_plane_filtered = outlier_remove(on_plane)
+    pcl.save(on_plane_filtered, 'temp.pcd')
+    filtered_arr = on_plane_filtered.to_array()
+    pca = PCA(n_components=3)
+    pca.fit(filtered_arr)
+    print(pca.components_)
+    print(pca.singular_values_)
+    sing = pca.singular_values_
+    print(sing[0]/sing[1])
+
+def test_is_table(fname):
+    cloud = pcl.load(fname)
+    on_plane, model = ransac_plane(cloud)
+    is_table(on_plane)
 
 def test():
     rospy.init_node('table_calibration_tf2_broadcaster', anonymous=False)
