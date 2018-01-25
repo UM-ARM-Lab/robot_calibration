@@ -131,22 +131,26 @@ def ransac_normal_plane(cloud, distance_threshold=0.01):
     indices, model = seg.segment()
     return indices, model
 
-def robust_min_max(theta, plane):
+
+def robust_min_max(theta, plane, bins=400):
+    """
+    Return left and right edge of square wave like data
+    :param theta: angle in RAD, start from x positive, counter clockwise
+    :param plane: 2xn data
+    :return: left edge, right edge, min derivative, max derivative
+    """
     vec = np.array([[np.cos(theta), np.sin(theta)]])
     projected = np.matmul(vec, plane)
-    hist, bins = np.histogram(projected.T, bins=100)
+    hist, bins = np.histogram(projected.T, bins=bins)
     hist = gaussian_filter1d(hist, 1)
-    kernel = np.array([1, 0, -1])
+    kernel = np.array([-1, 0, 1])
     conv = np.convolve(hist, kernel)
-    plt.plot(hist)
-    plt.plot(conv)
-    plt.show()
-
-    plt.hist(projected.T, bins=100)
-    plt.show()
-    min = 0
-    max = 10
-    return min, max
+    mini, maxi = conv[1:-1].argmin(), conv[1:-1].argmax()
+    minbin = (bins[mini] + bins[mini+1]) / 2.0
+    maxbin = (bins[maxi] + bins[maxi+1]) / 2.0
+    minval = conv[mini]
+    maxval = conv[maxi]
+    return minbin, maxbin, minval, maxval
 
 
 def component_min_max(xyvec, plane):
@@ -361,16 +365,95 @@ def test(fname):
     pcl_cloud = pcl.load(fname)
     main(pcl_cloud)
 
+
+def robust_caliper_localization(plane, division_num=90):
+    # find edge with robust caliper in each direction
+    thetas = []
+    min_arr = []
+    max_arr = []
+    for i in range(0, division_num*2):
+        theta = np.pi / float(division_num*2) * float(i)
+        minbin, maxbin, minval, maxval = robust_min_max(theta, plane)
+        thetas.append(theta)
+        min_arr.append(minval)
+        max_arr.append(maxval)
+
+    plt.plot(thetas, min_arr)
+    plt.plot(thetas, max_arr)
+    plt.show()
+
+    # use perpendicular as constrain, find sharpest edge
+    thetas_np = np.array(thetas)
+    min_np = np.array(min_arr)
+    max_np = np.array(max_arr)
+    diff_np = max_np - min_np
+    length = diff_np.shape[0]
+    folded_sum = diff_np[:length/2] + diff_np[length/2:]
+
+    plt.plot(thetas_np[:length/2], folded_sum)
+    plt.show()
+
+    # find edge length and center
+    major_angle = thetas[folded_sum.argmax()]
+    second_angle = major_angle + np.pi/2.0
+    major_min, major_max, minval, maxval = robust_min_max(major_angle, plane)
+    second_min, second_max, minval, maxval = robust_min_max(second_angle, plane)
+    major_axis = np.array([np.cos(major_angle), np.sin(major_angle)])
+    second_axis = np.array([np.cos(second_angle), np.sin(second_angle)])
+
+    # visualize
+    llcorner = major_min * major_axis + second_min * second_axis
+    urcorner = major_max * major_axis + second_max * second_axis
+    ax = plt.subplot(aspect='equal')
+    ax.scatter(plane[0], plane[1])
+    rect = plt.Rectangle(llcorner, (major_max - major_min), (second_max - second_min), fill=False, color='r',
+                         angle=(major_angle / np.pi) * 180.0)
+    ax.add_patch(rect)
+    plt.show()
+
+    # decide x(perpendicular with short edge) and y
+    x_angle = major_angle
+    if (major_max - major_min) > (second_max - second_min):
+        x_angle = second_angle
+    x_axis = np.array([np.cos(x_angle), np.sin(x_angle)])
+    if np.dot(x_axis, np.array([1, 0])) < 0:
+        x_angle += np.pi
+    y_angle = x_angle + np.pi/2.0
+
+    x_axis = np.array([np.cos(x_angle), np.sin(x_angle)])
+    y_axis = np.array([np.cos(y_angle), np.sin(y_angle)])
+    x_min, x_max, _, _ = robust_min_max(x_angle, plane)
+    y_min, y_max, _, _ = robust_min_max(y_angle, plane)
+    center = (x_max + x_min) / 2.0 * x_axis + (y_max - y_min) / 2.0 * y_axis
+
+    # evaluate
+    major_mat = major_axis.reshape((1, 2))
+    second_mat = second_axis.reshape((1, 2))
+    major_dot = np.matmul(major_mat, plane)[0]
+    second_dot = np.matmul(second_mat, plane)[0]
+
+    major_in = np.logical_and(major_dot <= major_max, major_dot >= major_min)
+    second_in = np.logical_and(second_dot <= second_max, second_dot >= second_min)
+    both_in = np.logical_and(major_in, second_in)
+    total = both_in.shape[0]
+    inlier_num = both_in.sum()
+    inlier_percent = float(inlier_num) / float(total)
+
+    return x_axis, y_axis, center, inlier_percent
+
+
 def test_robust(fname):
     cloud = pcl.load(fname)
     indices, model = ransac_normal_plane(cloud)
     inliers = cloud.extract(indices, negative=False)
     pcl.save(inliers, 'temp.pcd')
 
-    cloud = cloud.extract(indices, negative=True)
-
     proj = Projector(model)
     plane = proj.to_plane(inliers.to_array().T)
+
+    cloud = cloud.extract(indices, negative=True)
+
+
 
     ax = plt.subplot(aspect='equal')
     ax.scatter(plane[0], plane[1])
@@ -415,6 +498,13 @@ def test_robust(fname):
     plt.plot(hist)
     plt.plot(conv)
     plt.show()
+
+    mini, maxi = conv.argmin(), conv.argmax()
+    minbin = (bins[mini] + bins[mini+1]) / 2.0
+    maxbin = (bins[maxi] + bins[maxi+1]) / 2.0
+    minval = conv[mini]
+    maxval = conv[maxi]
+
 
     xmin, xmax = conv.argmin(), conv.argmax()
 
