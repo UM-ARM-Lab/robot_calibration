@@ -46,6 +46,12 @@ class Projector:
         norm = np.linalg.norm(n)
         dist = -model[3]/norm
         normal_vec = n/norm
+
+        if np.dot(normal_vec, np.array([0, 1, 0])) < 0:
+            # nomral should point down
+            normal_vec = -1.0 * normal_vec
+            dist = -dist
+
         center = normal_vec*dist
         plane_y = np.cross(normal_vec, np.array([1, 0, 0]))
         plane_y /= np.linalg.norm(plane_y)
@@ -56,6 +62,10 @@ class Projector:
         plane_to_world[0:3, 1] = plane_y
         plane_to_world[0:3, 2] = normal_vec
         plane_to_world[0:3, 3] = center
+
+        # center = np.array([0, 0, 0])
+        # quat = xy_to_quaternion(plane_x, plane_y)
+        # tf2_broadcast(center, quat, parent_frame_id='kinect2_victor_head_ir_optical_frame', child_frame_id='table')
 
         world_to_plane = np.linalg.inv(plane_to_world)
         self.plane_to_world = plane_to_world
@@ -127,7 +137,7 @@ def ransac_normal_plane(cloud, distance_threshold=0.01):
     seg.set_method_type(pcl.SAC_RANSAC)
     seg.set_distance_threshold(distance_threshold)
     seg.set_normal_distance_weight(0.01)
-    seg.set_max_iterations(400)
+    seg.set_max_iterations(200)
     indices, model = seg.segment()
     return indices, model
 
@@ -171,6 +181,92 @@ def stats_outlier_remove(cloud):
     fil.set_mean_k(50)
     fil.set_std_dev_mul_thresh(3)
     return fil.filter()
+
+
+def robust_caliper_localization(plane, division_num=90, visualization=False):
+    """
+    rotating caliper with robust min&max
+    :param plane: 2*n array
+    :param division_num: divisions per 90 degree
+    :return: x_axis(2,), y_axis(2,), center(2,), inlier_percent(float)
+    """
+
+    # find edge with robust caliper in each direction
+    thetas = []
+    min_arr = []
+    max_arr = []
+    for i in range(0, division_num*2):
+        theta = np.pi / float(division_num*2) * float(i)
+        minbin, maxbin, minval, maxval = robust_min_max(theta, plane)
+        thetas.append(theta)
+        min_arr.append(minval)
+        max_arr.append(maxval)
+
+    if visualization:
+        plt.plot(thetas, min_arr)
+        plt.plot(thetas, max_arr)
+        plt.show()
+
+    # use perpendicular as constrain, find sharpest edge
+    thetas_np = np.array(thetas)
+    min_np = np.array(min_arr)
+    max_np = np.array(max_arr)
+    diff_np = max_np - min_np
+    length = diff_np.shape[0]
+    folded_sum = diff_np[:length/2] + diff_np[length/2:]
+
+    if visualization:
+        plt.plot(thetas_np[:length/2], folded_sum)
+        plt.show()
+
+    # find edge length and center
+    major_angle = thetas[folded_sum.argmax()]
+    second_angle = major_angle + np.pi/2.0
+    major_min, major_max, minval, maxval = robust_min_max(major_angle, plane)
+    second_min, second_max, minval, maxval = robust_min_max(second_angle, plane)
+    major_axis = np.array([np.cos(major_angle), np.sin(major_angle)])
+    second_axis = np.array([np.cos(second_angle), np.sin(second_angle)])
+
+    # visualize
+    if visualization:
+        llcorner = major_min * major_axis + second_min * second_axis
+        urcorner = major_max * major_axis + second_max * second_axis
+        ax = plt.subplot(aspect='equal')
+        ax.scatter(plane[0], plane[1])
+        rect = plt.Rectangle(llcorner, (major_max - major_min), (second_max - second_min), fill=False, color='r',
+                             angle=(major_angle / np.pi) * 180.0)
+        ax.add_patch(rect)
+        plt.show()
+
+    # decide x(perpendicular with short edge) and y
+    x_angle = major_angle
+    if (major_max - major_min) > (second_max - second_min):
+        x_angle = second_angle
+    x_axis = np.array([np.cos(x_angle), np.sin(x_angle)])
+    if np.dot(x_axis, np.array([0, 1])) < 0:
+        x_angle += np.pi
+    y_angle = x_angle - np.pi / 2.0
+
+    x_axis = np.array([np.cos(x_angle), np.sin(x_angle)])
+    y_axis = np.array([np.cos(y_angle), np.sin(y_angle)])
+    x_min, x_max, _, _ = robust_min_max(x_angle, plane)
+    y_min, y_max, _, _ = robust_min_max(y_angle, plane)
+    center = (x_max + x_min) / 2.0 * x_axis + (y_max + y_min) / 2.0 * y_axis
+
+    # evaluate
+    major_mat = major_axis.reshape((1, 2))
+    second_mat = second_axis.reshape((1, 2))
+    major_dot = np.matmul(major_mat, plane)[0]
+    second_dot = np.matmul(second_mat, plane)[0]
+
+    major_in = np.logical_and(major_dot <= major_max, major_dot >= major_min)
+    second_in = np.logical_and(second_dot <= second_max, second_dot >= second_min)
+    both_in = np.logical_and(major_in, second_in)
+    total = both_in.shape[0]
+    inlier_num = both_in.sum()
+    inlier_percent = float(inlier_num) / float(total)
+
+    return x_axis, y_axis, center, inlier_percent
 
 
 def find_candidate_plane(pcl_cloud, table_ratio=1.428, ratio_threshold = 0.02):
@@ -288,6 +384,7 @@ def tf2_broadcast(trans, quat, parent_frame_id='kinect2_victor_head_ir_optical_f
     static_transformStamped.transform.rotation.w = quat[3]
 
     broadcaster.sendTransform(static_transformStamped)
+    print("Start to broadcast tf2 '%s' to '%s'" % (parent_frame_id, child_frame_id))
     rospy.spin()
 
 
@@ -317,19 +414,36 @@ def draw(plt, plane, center, xvec, yvec):
 # ================end visualization=======================
 
 
-def main(pcl_cloud):
-    # find a plane that looks like a table
-    on_plane, model = find_candidate_plane(pcl_cloud)
-    on_plane_filtered = stats_outlier_remove(on_plane)
-    on_plane_arr = on_plane.to_array().T
-    on_plane_filtered_arr = on_plane_filtered.to_array().T
+def main(pcl_cloud, inlier_percent_threshold=0.7):
+    xy2d, center2d = None, None
+    proj = None
+    i = 0
+    while True:
+        if i > 5:
+            raise RuntimeError('Failed to find candidate table plane.')
 
-    # build transformation between 2d(on plane) and 3d
-    proj = Projector(model)
-    on_plane_filtered_arr_2d = proj.to_plane(on_plane_filtered_arr)
+        # find plane
+        indices, model = ransac_normal_plane(pcl_cloud)
+        inliers = pcl_cloud.extract(indices, negative=False)
 
-    # find 2d pose and center of the table using PCA
-    xy2d, center2d = pca_localization(on_plane_filtered_arr_2d)
+        # project to 2d
+        proj = Projector(model)
+        plane = proj.to_plane(inliers.to_array().T)
+
+        # localize table
+        x_axis, y_axis, center, inlier_percent = robust_caliper_localization(plane)
+
+        if inlier_percent < inlier_percent_threshold:
+            # not a table
+            pcl_cloud = pcl_cloud.extract(indices, negative=True)
+            print('Not a table, inlier percentage:', inlier_percent)
+            print('Trimmed cloud size:', pcl_cloud.width * pcl_cloud.height)
+        else:
+            # found a table
+            xy2d = np.vstack((x_axis, y_axis)).T
+            center2d = center.reshape((1, 2)).T
+            print('Found a table, inlier percentage:', inlier_percent)
+            break
 
     # transform into 3d world frame
     xy3d = proj.to_world_rot_only(xy2d)
@@ -364,164 +478,5 @@ def listener():
 def test(fname):
     pcl_cloud = pcl.load(fname)
     main(pcl_cloud)
-
-
-def robust_caliper_localization(plane, division_num=90):
-    # find edge with robust caliper in each direction
-    thetas = []
-    min_arr = []
-    max_arr = []
-    for i in range(0, division_num*2):
-        theta = np.pi / float(division_num*2) * float(i)
-        minbin, maxbin, minval, maxval = robust_min_max(theta, plane)
-        thetas.append(theta)
-        min_arr.append(minval)
-        max_arr.append(maxval)
-
-    plt.plot(thetas, min_arr)
-    plt.plot(thetas, max_arr)
-    plt.show()
-
-    # use perpendicular as constrain, find sharpest edge
-    thetas_np = np.array(thetas)
-    min_np = np.array(min_arr)
-    max_np = np.array(max_arr)
-    diff_np = max_np - min_np
-    length = diff_np.shape[0]
-    folded_sum = diff_np[:length/2] + diff_np[length/2:]
-
-    plt.plot(thetas_np[:length/2], folded_sum)
-    plt.show()
-
-    # find edge length and center
-    major_angle = thetas[folded_sum.argmax()]
-    second_angle = major_angle + np.pi/2.0
-    major_min, major_max, minval, maxval = robust_min_max(major_angle, plane)
-    second_min, second_max, minval, maxval = robust_min_max(second_angle, plane)
-    major_axis = np.array([np.cos(major_angle), np.sin(major_angle)])
-    second_axis = np.array([np.cos(second_angle), np.sin(second_angle)])
-
-    # visualize
-    llcorner = major_min * major_axis + second_min * second_axis
-    urcorner = major_max * major_axis + second_max * second_axis
-    ax = plt.subplot(aspect='equal')
-    ax.scatter(plane[0], plane[1])
-    rect = plt.Rectangle(llcorner, (major_max - major_min), (second_max - second_min), fill=False, color='r',
-                         angle=(major_angle / np.pi) * 180.0)
-    ax.add_patch(rect)
-    plt.show()
-
-    # decide x(perpendicular with short edge) and y
-    x_angle = major_angle
-    if (major_max - major_min) > (second_max - second_min):
-        x_angle = second_angle
-    x_axis = np.array([np.cos(x_angle), np.sin(x_angle)])
-    if np.dot(x_axis, np.array([1, 0])) < 0:
-        x_angle += np.pi
-    y_angle = x_angle + np.pi/2.0
-
-    x_axis = np.array([np.cos(x_angle), np.sin(x_angle)])
-    y_axis = np.array([np.cos(y_angle), np.sin(y_angle)])
-    x_min, x_max, _, _ = robust_min_max(x_angle, plane)
-    y_min, y_max, _, _ = robust_min_max(y_angle, plane)
-    center = (x_max + x_min) / 2.0 * x_axis + (y_max - y_min) / 2.0 * y_axis
-
-    # evaluate
-    major_mat = major_axis.reshape((1, 2))
-    second_mat = second_axis.reshape((1, 2))
-    major_dot = np.matmul(major_mat, plane)[0]
-    second_dot = np.matmul(second_mat, plane)[0]
-
-    major_in = np.logical_and(major_dot <= major_max, major_dot >= major_min)
-    second_in = np.logical_and(second_dot <= second_max, second_dot >= second_min)
-    both_in = np.logical_and(major_in, second_in)
-    total = both_in.shape[0]
-    inlier_num = both_in.sum()
-    inlier_percent = float(inlier_num) / float(total)
-
-    return x_axis, y_axis, center, inlier_percent
-
-
-def test_robust(fname):
-    cloud = pcl.load(fname)
-    indices, model = ransac_normal_plane(cloud)
-    inliers = cloud.extract(indices, negative=False)
-    pcl.save(inliers, 'temp.pcd')
-
-    proj = Projector(model)
-    plane = proj.to_plane(inliers.to_array().T)
-
-    cloud = cloud.extract(indices, negative=True)
-
-
-
-    ax = plt.subplot(aspect='equal')
-    ax.scatter(plane[0], plane[1])
-    plt.show()
-
-    angle = []
-    min_arr = []
-    max_arr = []
-    for i in range(0, 180, 1):
-        theta = float(i) / 180.0 * np.pi
-        vec = np.array([[np.cos(theta), np.sin(theta)]])
-        projected = np.matmul(vec, plane)
-        hist, bins = np.histogram(projected.T, bins=100)
-        hist = gaussian_filter1d(hist, 1)
-        kernel = np.array([-1, 0, 1])
-        conv = np.convolve(hist, kernel)
-        angle.append(float(i))
-        min_arr.append(conv.min())
-        max_arr.append(conv.max())
-    plt.plot(angle, min_arr)
-    plt.plot(angle, max_arr)
-    plt.show()
-
-    diff_arr = np.array(max_arr) - np.array(min_arr)
-    rot_sum = []
-    for i in range(0, 90, 1):
-        rot_sum.append(diff_arr[i] + diff_arr[(i+90)%180])
-    plt.plot(range(0, 90, 1), rot_sum)
-    plt.show()
-
-    rot_sum = np.array(rot_sum)
-    peak_angle = rot_sum.argmax()
-
-
-    theta = float(peak_angle) / 180.0 * np.pi
-    vec = np.array([[np.cos(theta), np.sin(theta)]])
-    projected = np.matmul(vec, plane)
-    hist, bins = np.histogram(projected.T, bins=100)
-    hist = gaussian_filter1d(hist, 1)
-    kernel = np.array([-1, 0, 1])
-    conv = np.convolve(hist, kernel)
-    plt.plot(hist)
-    plt.plot(conv)
-    plt.show()
-
-    mini, maxi = conv.argmin(), conv.argmax()
-    minbin = (bins[mini] + bins[mini+1]) / 2.0
-    maxbin = (bins[maxi] + bins[maxi+1]) / 2.0
-    minval = conv[mini]
-    maxval = conv[maxi]
-
-
-    xmin, xmax = conv.argmin(), conv.argmax()
-
-    theta = float((peak_angle+90) % 180) / 180.0 * np.pi
-    vec = np.array([[np.cos(theta), np.sin(theta)]])
-    projected = np.matmul(vec, plane)
-    hist, bins = np.histogram(projected.T, bins=100)
-    hist = gaussian_filter1d(hist, 1)
-    kernel = np.array([-1, 0, 1])
-    conv = np.convolve(hist, kernel)
-    plt.plot(hist)
-    plt.plot(conv)
-    plt.show()
-
-    ymin, ymax = conv.argmin(), conv.argmax()
-
-    xve
-
 
 listener()
