@@ -6,7 +6,7 @@ import ros_numpy
 
 import numpy as np
 import pcl
-from sklearn.decomposition import PCA
+# from sklearn.decomposition import PCA
 
 import tf
 import tf2_ros
@@ -14,7 +14,7 @@ import geometry_msgs.msg
 
 from scipy.ndimage.filters import gaussian_filter1d
 
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 
 
 def to_unit(vec):
