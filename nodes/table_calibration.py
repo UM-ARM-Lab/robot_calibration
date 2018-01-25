@@ -1,12 +1,11 @@
 #!/usr/bin/env python
 
 import rospy
-from sensor_msgs.msg import PointCloud2, CameraInfo
+from sensor_msgs.msg import PointCloud2
 import ros_numpy
 
 import numpy as np
 import pcl
-from scipy import stats
 from sklearn.decomposition import PCA
 
 import tf
@@ -14,6 +13,8 @@ import tf2_ros
 import geometry_msgs.msg
 
 from scipy.ndimage.filters import gaussian_filter1d
+
+import matplotlib.pyplot as plt
 
 
 def to_unit(vec):
@@ -403,9 +404,6 @@ def msg_to_pcl(msg):
 
 
 # ===================visualization========================
-import matplotlib.pyplot as plt
-
-
 def draw(plt, plane, center, xvec, yvec):
     plt.scatter(plane[0], plane[1])
     plt.arrow(center[0], center[1], xvec[0], xvec[1], shape='full', lw=3, length_includes_head=True, head_width=.01, color='r')
