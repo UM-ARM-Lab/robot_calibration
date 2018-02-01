@@ -11,6 +11,7 @@ import pcl
 import tf
 import tf2_ros
 import geometry_msgs.msg
+from arc_utilities import transformation_helper
 
 from scipy.ndimage.filters import gaussian_filter1d
 
@@ -365,30 +366,6 @@ def pca_localization(plane):
     return out, center.reshape((1, 2)).transpose()
 
 
-def tf2_broadcast(trans, quat, parent_frame_id='kinect2_victor_head_ir_optical_frame', child_frame_id='table'):
-    broadcaster = tf2_ros.StaticTransformBroadcaster()
-
-    static_transformStamped = geometry_msgs.msg.TransformStamped()
-    static_transformStamped.header.stamp = rospy.Time.now()
-    static_transformStamped.header.frame_id = parent_frame_id
-    static_transformStamped.child_frame_id = child_frame_id
-    # trans = [1.00619416, -0.19541004, -0.42314096]
-    # trans = [-0.01299984, -0.13024425,  0.95459]
-    # trans = [-0.00621743, -0.13153817,  0.9555135]
-    static_transformStamped.transform.translation.x = trans[0]
-    static_transformStamped.transform.translation.y = trans[1]
-    static_transformStamped.transform.translation.z = trans[2]
-    # quat = tf.transformations.quaternion_from_euler(0, 0, 0)
-    static_transformStamped.transform.rotation.x = quat[0]
-    static_transformStamped.transform.rotation.y = quat[1]
-    static_transformStamped.transform.rotation.z = quat[2]
-    static_transformStamped.transform.rotation.w = quat[3]
-
-    broadcaster.sendTransform(static_transformStamped)
-    print("Start to broadcast tf2 '%s' to '%s'" % (parent_frame_id, child_frame_id))
-    rospy.spin()
-
-
 # ===================capture pointcloud2=======================
 def msg_to_pcl(msg):
     arr = ros_numpy.numpify(msg)
@@ -412,69 +389,132 @@ def draw(plt, plane, center, xvec, yvec):
 # ================end visualization=======================
 
 
-def main(pcl_cloud, inlier_percent_threshold=0.7):
-    xy2d, center2d = None, None
-    proj = None
-    i = 0
-    while True:
-        if i > 5:
-            raise RuntimeError('Failed to find candidate table plane.')
 
-        # find plane
-        indices, model = ransac_normal_plane(pcl_cloud)
-        inliers = pcl_cloud.extract(indices, negative=False)
+class TableExtraction:
 
-        # project to 2d
-        proj = Projector(model)
-        plane = proj.to_plane(inliers.to_array().T)
+    def __init__(self, kinect_name="kinect2_victor_head"):
+        self.kinect_name = kinect_name
+        self.table_found = False
 
-        # localize table
-        x_axis, y_axis, center, inlier_percent = robust_caliper_localization(plane)
+        self.tf_buffer = tf2_ros.Buffer()
+        self.listener = tf2_ros.TransformListener(self.tf_buffer)
+        self.broadcaster = tf2_ros.StaticTransformBroadcaster()
 
-        if inlier_percent < inlier_percent_threshold:
-            # not a table
-            pcl_cloud = pcl_cloud.extract(indices, negative=True)
-            print('Not a table, inlier percentage:', inlier_percent)
-            print('Trimmed cloud size:', pcl_cloud.width * pcl_cloud.height)
+        rospy.Subscriber(self.kinect_name + '/sd/points', PointCloud2, self.callback)
+
+    def callback(self, msg):
+        # print(msg)
+        if not self.table_found:
+            print "invoking callback (extraction)"
+            self.table_found = True
+            cloud = msg_to_pcl(msg)
+            self.extract_table_pose(cloud)
         else:
-            # found a table
-            xy2d = np.vstack((x_axis, y_axis)).T
-            center2d = center.reshape((1, 2)).T
-            print('Found a table, inlier percentage:', inlier_percent)
-            break
+            self.print_camera_transform()
 
-    # transform into 3d world frame
-    xy3d = proj.to_world_rot_only(xy2d)
-    center3d = proj.to_world(center2d)
-    transp = xy3d.transpose()
-    x = transp[0]
-    y = transp[1]
-    center = center3d.transpose()[0]
-    quat = xy_to_quaternion(x, y)
+    def extract_table_pose(self, pcl_cloud, inlier_percent_threshold=0.7):
+        xy2d, center2d = None, None
+        proj = None
+        i = 0
+        while True:
+            if i > 5:
+                raise RuntimeError('Failed to find candidate table plane.')
 
-    # start broadcast static transformation
-    tf2_broadcast(center, quat, parent_frame_id='kinect2_victor_head_ir_optical_frame', child_frame_id='table')
+            # find plane
+            indices, model = ransac_normal_plane(pcl_cloud)
+            inliers = pcl_cloud.extract(indices, negative=False)
 
-GLOBAL_MSG_RECEIVED = False
+            # project to 2d
+            proj = Projector(model)
+            plane = proj.to_plane(inliers.to_array().T)
 
-def callback(msg):
-    # print(msg)
-    global GLOBAL_MSG_RECEIVED
-    if not GLOBAL_MSG_RECEIVED:
-        GLOBAL_MSG_RECEIVED = True
-        cloud = msg_to_pcl(msg)
-        main(cloud)
+            # localize table
+            x_axis, y_axis, center, inlier_percent = robust_caliper_localization(plane)
 
+            if inlier_percent < inlier_percent_threshold:
+                # not a table
+                pcl_cloud = pcl_cloud.extract(indices, negative=True)
+                print('Not a table, inlier percentage:', inlier_percent)
+                print('Trimmed cloud size:', pcl_cloud.width * pcl_cloud.height)
+            else:
+                # found a table
+                xy2d = np.vstack((x_axis, y_axis)).T
+                center2d = center.reshape((1, 2)).T
+                print('Found a table, inlier percentage:', inlier_percent)
+                break
 
-def listener():
-    rospy.init_node('table_calibration_tf2_broadcaster', anonymous=False)
-    rospy.Subscriber('/kinect2_victor_head/sd/points', PointCloud2, callback)
-    # spin() simply keeps python from exiting until this node is stopped
-    rospy.spin()
+        # transform into 3d world frame
+        xy3d = proj.to_world_rot_only(xy2d)
+        center3d = proj.to_world(center2d)
+        transp = xy3d.transpose()
+        x = transp[0]
+        y = transp[1]
+        center = center3d.transpose()[0]
+        quat = xy_to_quaternion(x, y)
+
+        # start broadcast static transformation
+        self.tf2_broadcast(center, quat,
+                           parent_frame_id=self.kinect_name + '_ir_optical_frame',
+                           child_frame_id='table_surface_from_kinect_calibration')
+
+    def print_camera_transform(self):
+        # TODO: Make these transform names (at least for the kinect) paramaters
+        mocap_plate_to_table_surface = self.get_tf_transform(
+            parent='mocap_Kinect2VictorHead_Kinect2VictorHead', child='table_surface')
+
+        table_as_calibration_to_kinect_link = self.get_tf_transform(
+            parent='table_surface_from_kinect_calibration', child=self.kinect_name + '_link')
+
+        mocap_plate_to_kinect2_link = np.matmul(mocap_plate_to_table_surface, table_as_calibration_to_kinect_link)
+
+        trans, quat =  transformation_helper.ExtractFromMatrix(mocap_plate_to_kinect2_link)
+
+        print "calced mocap to link:\n", mocap_plate_to_kinect2_link
+        print "Trans: ", trans
+        print "Quat:  ", quat
+        print "\n"
+
+    def get_tf_transform(self, parent, child, verbose=False):
+        try:
+            while not rospy.is_shutdown() and \
+                    not self.tf_buffer.can_transform(child, parent, rospy.Time(), rospy.Duration(secs=0, nsecs=500*1000*1000)):
+                print "Waiting for TF frames ", parent, " and ", child
+            transform = self.tf_buffer.lookup_transform(parent, child, rospy.Time())
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            rospy.logerr("No transform available: %s to %s", parent, child)
+            return
+
+        return transformation_helper.BuildMatrixRos(transform.transform.translation, transform.transform.rotation)
+
+    def tf2_broadcast(self, trans, quat, parent_frame_id='kinect2_victor_head_ir_optical_frame', child_frame_id='table'):
+        static_transformStamped = geometry_msgs.msg.TransformStamped()
+        static_transformStamped.header.stamp = rospy.Time.now()
+        static_transformStamped.header.frame_id = parent_frame_id
+        static_transformStamped.child_frame_id = child_frame_id
+        # trans = [1.00619416, -0.19541004, -0.42314096]
+        # trans = [-0.01299984, -0.13024425,  0.95459]
+        # trans = [-0.00621743, -0.13153817,  0.9555135]
+        static_transformStamped.transform.translation.x = trans[0]
+        static_transformStamped.transform.translation.y = trans[1]
+        static_transformStamped.transform.translation.z = trans[2]
+        # quat = tf.transformations.quaternion_from_euler(0, 0, 0)
+        static_transformStamped.transform.rotation.x = quat[0]
+        static_transformStamped.transform.rotation.y = quat[1]
+        static_transformStamped.transform.rotation.z = quat[2]
+        static_transformStamped.transform.rotation.w = quat[3]
+
+        self.broadcaster.sendTransform(static_transformStamped)
+        print("Start to broadcast tf2 '%s' to '%s'" % (parent_frame_id, child_frame_id))
 
 
 def test(fname):
     pcl_cloud = pcl.load(fname)
-    main(pcl_cloud)
+    extractor = TableExtraction()
+    extractor.extract_table_pose(pcl_cloud)
 
-listener()
+
+if __name__ == "__main__":
+    rospy.init_node('table_calibration_tf2_broadcaster', anonymous=False)
+    extractor = TableExtraction()
+    # spin() simply keeps python from exiting until this node is stopped
+    rospy.spin()
