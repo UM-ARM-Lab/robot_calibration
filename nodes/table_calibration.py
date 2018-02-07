@@ -15,7 +15,7 @@ from arc_utilities import transformation_helper
 
 from scipy.ndimage.filters import gaussian_filter1d
 
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 
 
 def to_unit(vec):
@@ -67,11 +67,11 @@ class Projector:
 
         # center = np.array([0, 0, 0])
         # quat = xy_to_quaternion(plane_x, plane_y)
-        # tf2_broadcast(center, quat, parent_frame_id='kinect2_victor_head_ir_optical_frame', child_frame_id='table')
+        # tf2_broadcast(center, quat, parent_frame_id='kinect2_victor_head_rgb_optical_frame', child_frame_id='table')
 
         world_to_plane = np.linalg.inv(plane_to_world)
-        self.plane_to_world = plane_to_world
-        self.world_to_plane = world_to_plane
+        self.plane_to_world = plane_to_world # Mapping from localplane to world frame: p_world = T * p_local
+        self.world_to_plane = world_to_plane # Mapping from world frame to local plane: p_local = T * p_world
 
     def to_plane(self, cloud_arr):
         """
@@ -255,6 +255,9 @@ def robust_caliper_localization(plane, division_num=90, visualization=False):
     y_min, y_max, _, _ = robust_min_max(y_angle, plane)
     center = (x_max + x_min) / 2.0 * x_axis + (y_max + y_min) / 2.0 * y_axis
 
+    print "x size: ", x_max - x_min, " meters. This should be close to 30 inches."
+    print "y size: ", y_max - y_min, " meters. This should be close to 42 inches."
+
     # evaluate
     major_mat = major_axis.reshape((1, 2))
     second_mat = second_axis.reshape((1, 2))
@@ -400,7 +403,7 @@ class TableExtraction:
         self.listener = tf2_ros.TransformListener(self.tf_buffer)
         self.broadcaster = tf2_ros.StaticTransformBroadcaster()
 
-        rospy.Subscriber(self.kinect_name + '/sd/points', PointCloud2, self.callback)
+        rospy.Subscriber(self.kinect_name + '/qhd/points', PointCloud2, self.callback)
 
     def callback(self, msg):
         # print(msg)
@@ -408,11 +411,11 @@ class TableExtraction:
             print "invoking callback (extraction)"
             self.table_found = True
             cloud = msg_to_pcl(msg)
-            self.extract_table_pose(cloud)
+            self.extract_table_pose(msg.header.frame_id, cloud)
         else:
             self.print_camera_transform()
 
-    def extract_table_pose(self, pcl_cloud, inlier_percent_threshold=0.7):
+    def extract_table_pose(self, native_frame_id, pcl_cloud, inlier_percent_threshold=0.7):
         xy2d, center2d = None, None
         proj = None
         i = 0
@@ -429,7 +432,7 @@ class TableExtraction:
             plane = proj.to_plane(inliers.to_array().T)
 
             # localize table
-            x_axis, y_axis, center, inlier_percent = robust_caliper_localization(plane)
+            x_axis, y_axis, center, inlier_percent = robust_caliper_localization(plane, visualization=False)
 
             if inlier_percent < inlier_percent_threshold:
                 # not a table
@@ -454,7 +457,7 @@ class TableExtraction:
 
         # start broadcast static transformation
         self.tf2_broadcast(center, quat,
-                           parent_frame_id=self.kinect_name + '_ir_optical_frame',
+                           parent_frame_id=native_frame_id,
                            child_frame_id='table_surface_from_kinect_calibration')
 
     def print_camera_transform(self):
@@ -486,7 +489,7 @@ class TableExtraction:
 
         return transformation_helper.BuildMatrixRos(transform.transform.translation, transform.transform.rotation)
 
-    def tf2_broadcast(self, trans, quat, parent_frame_id='kinect2_victor_head_ir_optical_frame', child_frame_id='table'):
+    def tf2_broadcast(self, trans, quat, parent_frame_id, child_frame_id):
         static_transformStamped = geometry_msgs.msg.TransformStamped()
         static_transformStamped.header.stamp = rospy.Time.now()
         static_transformStamped.header.frame_id = parent_frame_id
