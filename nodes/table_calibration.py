@@ -468,6 +468,13 @@ class TableExtraction:
         table_as_calibration_to_kinect_link = self.get_tf_transform(
             parent='table_surface_from_kinect_calibration', child=self.kinect_name + '_link')
 
+        table_as_calibration_to_kinect_link = np.dot(
+            np.array([[-1.0,  0.0, 0.0, 0.0],
+                      [ 0.0, -1.0, 0.0, 0.0],
+                      [ 0.0,  0.0, 1.0, 0.0],
+                      [ 0.0,  0.0, 0.0, 1.0]]),
+            table_as_calibration_to_kinect_link)
+
         mocap_plate_to_kinect2_link = np.matmul(mocap_plate_to_table_surface, table_as_calibration_to_kinect_link)
 
         trans, quat =  transformation_helper.ExtractFromMatrix(mocap_plate_to_kinect2_link)
@@ -476,6 +483,9 @@ class TableExtraction:
         print "Trans: ", trans
         print "Quat:  ", quat
         print "\n"
+
+        # import IPython
+        # IPython.embed()
 
     def get_tf_transform(self, parent, child, verbose=False):
         try:
