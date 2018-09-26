@@ -18,6 +18,11 @@ from scipy.ndimage.filters import gaussian_filter1d
 import matplotlib.pyplot as plt
 
 
+kinect_mocap_name = {"kinect2_victor_head": "mocap_Kinect2VictorHead_Kinect2VictorHead",
+                     "kinect2_roof":        "mocap_Kinect2BlockRoof_Kinect2BlockRoof",
+                     "kinect2_tripodA":     "mocap_Kinect2TripodA_Kinect2TripodA"}
+
+
 def to_unit(vec):
     norm = np.linalg.norm(vec)
     return vec/norm
@@ -255,8 +260,8 @@ def robust_caliper_localization(plane, division_num=90, visualization=False):
     y_min, y_max, _, _ = robust_min_max(y_angle, plane)
     center = (x_max + x_min) / 2.0 * x_axis + (y_max + y_min) / 2.0 * y_axis
 
-    print "x size: ", x_max - x_min, " meters. This should be close to 30 inches."
-    print "y size: ", y_max - y_min, " meters. This should be close to 42 inches."
+    print "x size: ", x_max - x_min, " meters. This should be close to 30 inches. ", 30.0 * 2.54 / 100.0
+    print "y size: ", y_max - y_min, " meters. This should be close to 42 inches. ", 42.0 * 2.54 / 100.0
 
     # evaluate
     major_mat = major_axis.reshape((1, 2))
@@ -395,7 +400,7 @@ def draw(plt, plane, center, xvec, yvec):
 
 class TableExtraction:
 
-    def __init__(self, kinect_name="kinect2_victor_head"):
+    def __init__(self, kinect_name):
         self.kinect_name = kinect_name
         self.table_found = False
 
@@ -463,7 +468,7 @@ class TableExtraction:
     def print_camera_transform(self):
         # TODO: Make these transform names (at least for the kinect) paramaters
         mocap_plate_to_table_surface = self.get_tf_transform(
-            parent='mocap_Kinect2VictorHead_Kinect2VictorHead', child='table_surface')
+            parent=kinect_mocap_name[self.kinect_name], child='folding_table_surface')
 
         table_as_calibration_to_kinect_link = self.get_tf_transform(
             parent='table_surface_from_kinect_calibration', child=self.kinect_name + '_link')
@@ -528,6 +533,7 @@ def test(fname):
 
 if __name__ == "__main__":
     rospy.init_node('table_calibration_tf2_broadcaster', anonymous=False)
-    extractor = TableExtraction()
+    extractor = TableExtraction(kinect_name="kinect2_tripodA")
+    # extractor = TableExtraction(kinect_name="kinect2_victor_head")
     # spin() simply keeps python from exiting until this node is stopped
     rospy.spin()
