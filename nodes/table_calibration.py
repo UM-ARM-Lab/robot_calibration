@@ -468,7 +468,7 @@ class TableExtraction:
     def print_camera_transform(self):
         # TODO: Make these transform names (at least for the kinect) paramaters
         mocap_plate_to_table_surface = self.get_tf_transform(
-            parent=kinect_mocap_name[self.kinect_name], child='folding_table_surface')
+            parent=kinect_mocap_name[self.kinect_name], child='table_surface')
 
         table_as_calibration_to_kinect_link = self.get_tf_transform(
             parent='table_surface_from_kinect_calibration', child=self.kinect_name + '_link')
